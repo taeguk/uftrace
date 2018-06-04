@@ -73,6 +73,26 @@ struct tui_graph {
 	int nr_search;
 };
 
+struct tui_window {
+	void (*up)(void *arg);
+	void (*down)(void *arg);
+	void (*pgup)(void *arg);
+	void (*pgdown)(void *arg);
+	void (*home)(void *arg);
+	void (*end)(void *arg);
+	void (*prev)(void *arg);
+	void (*next)(void *arg);
+	void (*parent)(void *arg);
+	void (*search)(void *arg);
+	void (*search_prev)(void *arg);
+	void (*search_next)(void *arg);
+	void (*enter)(void *arg);
+	void (*collapse)(void *arg);
+	void (*expand)(void *arg);
+	void (*display)(struct ftrace_file_handle *handle,
+			void *arg, bool full_redraw);
+};
+
 static LIST_HEAD(tui_graph_list);
 static LIST_HEAD(graph_output_fields);
 static struct tui_report tui_report;
@@ -797,9 +817,10 @@ static void print_graph_indent(struct tui_graph *graph,
 }
 
 static void tui_graph_display(struct ftrace_file_handle *handle,
-			      struct tui_graph *graph, bool full_redraw)
+			      void *arg, bool full_redraw)
 {
 	int count = 0;
+	struct tui_graph *graph = arg;
 	struct tui_graph_node *node = graph->top;
 	struct display_field *field;
 	int d = graph->top_depth;
@@ -943,10 +964,11 @@ static void tui_graph_finish(void)
 	free(partial_graph.curr_mask);
 }
 
-static void tui_graph_move_up(struct tui_graph *graph)
+static void tui_graph_move_up(void *arg)
 {
-	int depth = 0;
+	struct tui_graph *graph = arg;
 	struct tui_graph_node *node;
+	int depth = 0;
 
 	node = graph_prev_node(graph->curr, &depth, NULL);
 	if (node == NULL)
@@ -965,10 +987,11 @@ static void tui_graph_move_up(struct tui_graph *graph)
 	graph->curr = node;
 }
 
-static void tui_graph_move_down(struct tui_graph *graph)
+static void tui_graph_move_down(void *arg)
 {
-	int depth = 0;
+	struct tui_graph *graph = arg;
 	struct tui_graph_node *node;
+	int depth = 0;
 
 	node = graph_next_node(graph->curr, &depth, NULL);
 	if (node == NULL)
@@ -993,8 +1016,9 @@ static void tui_graph_move_down(struct tui_graph *graph)
 	}
 }
 
-static void tui_graph_page_up(struct tui_graph *graph)
+static void tui_graph_page_up(void *arg)
 {
+	struct tui_graph *graph = arg;
 	struct tui_graph_node *node;
 
 	if (graph->curr != graph->top) {
@@ -1021,8 +1045,9 @@ static void tui_graph_page_up(struct tui_graph *graph)
 	graph->top_index = graph->curr_index;
 }
 
-static void tui_graph_page_down(struct tui_graph *graph)
+static void tui_graph_page_down(void *arg)
 {
+	struct tui_graph *graph = arg;
 	int depth = 0;
 	int orig_index;
 	int next_index;
@@ -1073,8 +1098,10 @@ static void tui_graph_page_down(struct tui_graph *graph)
 	}
 }
 
-static void tui_graph_move_home(struct tui_graph *graph)
+static void tui_graph_move_home(void *arg)
 {
+	struct tui_graph *graph = arg;
+
 	graph->top = (struct tui_graph_node*)&graph->ug.root;
 	graph->curr = graph->top;
 
@@ -1082,8 +1109,9 @@ static void tui_graph_move_home(struct tui_graph *graph)
 	graph->top_depth = 0;
 }
 
-static void tui_graph_move_end(struct tui_graph *graph)
+static void tui_graph_move_end(void *arg)
 {
+	struct tui_graph *graph = arg;
 	int next_index;
 	int next_depth;
 	struct tui_graph_node *node;
@@ -1138,8 +1166,9 @@ static void tui_graph_move_end(struct tui_graph *graph)
 }
 
 /* move to the previous sibling */
-static void tui_graph_move_prev(struct tui_graph *graph)
+static void tui_graph_move_prev(void *arg)
 {
+	struct tui_graph *graph = arg;
 	struct uftrace_graph_node *parent = graph->curr->n.parent;
 	struct tui_graph_node *prev;
 
@@ -1156,8 +1185,9 @@ static void tui_graph_move_prev(struct tui_graph *graph)
 }
 
 /* move to the next sibling */
-static void tui_graph_move_next(struct tui_graph *graph)
+static void tui_graph_move_next(void *arg)
 {
+	struct tui_graph *graph = arg;
 	struct uftrace_graph_node *parent = graph->curr->n.parent;
 	struct tui_graph_node *next;
 
@@ -1173,8 +1203,9 @@ static void tui_graph_move_next(struct tui_graph *graph)
 		tui_graph_move_down(graph);
 }
 
-static void tui_graph_move_parent(struct tui_graph *graph)
+static void tui_graph_move_parent(void *arg)
 {
+	struct tui_graph *graph = arg;
 	struct tui_graph_node *parent = (void *)graph->curr->n.parent;
 
 	if (parent == NULL)
@@ -1184,8 +1215,10 @@ static void tui_graph_move_parent(struct tui_graph *graph)
 		tui_graph_move_up(graph);
 }
 
-static void tui_graph_enter(struct tui_graph *graph)
+static void tui_graph_enter(void *arg)
 {
+	struct tui_graph *graph = arg;
+
 	/* root node is not foldable */
 	if (graph->curr->n.parent == NULL)
 		return;
@@ -1208,16 +1241,18 @@ static void fold_graph_node(struct tui_graph_node *node, bool fold)
 		fold_graph_node(child, fold);
 }
 
-static void tui_graph_collapse(struct tui_graph *graph)
+static void tui_graph_collapse(void *arg)
 {
+	struct tui_graph *graph = arg;
 	struct tui_graph_node *node;
 
 	list_for_each_entry(node, &graph->curr->n.head, n.list)
 		fold_graph_node(node, true);
 }
 
-static void tui_graph_expand(struct tui_graph *graph)
+static void tui_graph_expand(void *arg)
 {
+	struct tui_graph *graph = arg;
 	struct tui_graph_node *node;
 
 	list_for_each_entry(node, &graph->curr->n.head, n.list)
@@ -1242,8 +1277,9 @@ static void tui_report_finish(void)
 {
 }
 
-static void tui_report_move_up(struct tui_report *report)
+static void tui_report_move_up(void *arg)
 {
+	struct tui_report *report = arg;
 	struct rb_node *prev = rb_prev(&report->curr->sort_link);
 
 	if (prev == NULL)
@@ -1258,8 +1294,9 @@ static void tui_report_move_up(struct tui_report *report)
 	}
 }
 
-static void tui_report_move_down(struct tui_report *report)
+static void tui_report_move_down(void *arg)
 {
+	struct tui_report *report = arg;
 	struct rb_node *next = rb_next(&report->curr->sort_link);
 
 	if (next == NULL)
@@ -1275,8 +1312,10 @@ static void tui_report_move_down(struct tui_report *report)
 	}
 }
 
-static void tui_report_page_up(struct tui_report *report)
+static void tui_report_page_up(void *arg)
 {
+	struct tui_report *report = arg;
+
 	if (report->curr != report->top) {
 		report->curr = report->top;
 		report->curr_index = report->top_index;
@@ -1296,8 +1335,9 @@ static void tui_report_page_up(struct tui_report *report)
 	report->top_index = report->curr_index;
 }
 
-static void tui_report_page_down(struct tui_report *report)
+static void tui_report_page_down(void *arg)
 {
+	struct tui_report *report = arg;
 	struct rb_node *next;
 	int orig_index = report->top_index;
 	int next_index = report->curr_index;
@@ -1331,8 +1371,9 @@ static void tui_report_page_down(struct tui_report *report)
 	}
 }
 
-static void tui_report_move_home(struct tui_report *report)
+static void tui_report_move_home(void *arg)
 {
+	struct tui_report *report = arg;
 	struct rb_node *node = rb_first(&report->sort_tree);
 
 	report->top = rb_entry(node, struct tui_report_node, sort_link);
@@ -1341,8 +1382,9 @@ static void tui_report_move_home(struct tui_report *report)
 	report->top_index = report->curr_index = 0;
 }
 
-static void tui_report_move_end(struct tui_report *report)
+static void tui_report_move_end(void *arg)
 {
+	struct tui_report *report = arg;
 	struct rb_node *node = rb_last(&report->sort_tree);
 	int next_index;
 
@@ -1411,9 +1453,10 @@ static void print_report_field(struct tui_report *report,
 }
 
 static void tui_report_display(struct ftrace_file_handle *handle,
-			       struct tui_report *report, bool full_redraw)
+			       void *arg, bool full_redraw)
 {
 	int count = 0;
+	struct tui_report *report = arg;
 	struct tui_report_node *node = report->top;
 
 	if (LINES <= 2)
@@ -1531,8 +1574,10 @@ static int count_graph_node(struct uftrace_graph_node *node)
 	return n;
 }
 
-static void tui_search_graph_count(struct tui_graph *graph)
+static void tui_search_graph_count(void *arg)
 {
+	struct tui_graph *graph = arg;
+
 	if (tui_search == NULL)
 		return;
 
@@ -1542,8 +1587,9 @@ static void tui_search_graph_count(struct tui_graph *graph)
 	graph->nr_search = count_graph_node(&graph->ug.root);
 }
 
-static void tui_search_report_count(struct tui_report *report)
+static void tui_search_report_count(void *arg)
 {
+	struct tui_report *report = arg;
 	struct rb_node *rb;
 	struct tui_report_node *node;
 
@@ -1566,8 +1612,9 @@ static void tui_search_report_count(struct tui_report *report)
 	}
 }
 
-static void tui_search_graph_prev(struct tui_graph *graph)
+static void tui_search_graph_prev(void *arg)
 {
+	struct tui_graph *graph = arg;
 	struct tui_graph_node *node = graph->curr;
 	int depth;
 
@@ -1587,8 +1634,9 @@ static void tui_search_graph_prev(struct tui_graph *graph)
 		tui_graph_move_up(graph);
 }
 
-static void tui_search_graph_next(struct tui_graph *graph)
+static void tui_search_graph_next(void *arg)
 {
+	struct tui_graph *graph = arg;
 	struct tui_graph_node *node = graph->curr;
 	int depth;
 
@@ -1608,8 +1656,9 @@ static void tui_search_graph_next(struct tui_graph *graph)
 		tui_graph_move_down(graph);
 }
 
-static void tui_search_report_prev(struct tui_report *report)
+static void tui_search_report_prev(void *arg)
 {
+	struct tui_report *report = arg;
 	struct tui_report_node *node = report->curr;
 
 	if (tui_search == NULL)
@@ -1631,8 +1680,9 @@ static void tui_search_report_prev(struct tui_report *report)
 		tui_report_move_up(report);
 }
 
-static void tui_search_report_next(struct tui_report *report)
+static void tui_search_report_next(void *arg)
 {
+	struct tui_report *report = arg;
 	struct tui_report_node *node = report->curr;
 
 	if (tui_search == NULL)
@@ -1654,20 +1704,58 @@ static void tui_search_report_next(struct tui_report *report)
 		tui_report_move_down(report);
 }
 
+struct tui_window graph_win = {
+	.up = tui_graph_move_up,
+	.down = tui_graph_move_down,
+	.pgup = tui_graph_page_up,
+	.pgdown = tui_graph_page_down,
+	.home = tui_graph_move_home,
+	.end = tui_graph_move_end,
+	.prev = tui_graph_move_prev,
+	.next = tui_graph_move_next,
+	.parent = tui_graph_move_parent,
+	.search = tui_search_graph_count,
+	.search_prev = tui_search_graph_prev,
+	.search_next = tui_search_graph_next,
+	.enter = tui_graph_enter,
+	.collapse = tui_graph_collapse,
+	.expand = tui_graph_expand,
+	.display = tui_graph_display,
+};
+
+struct tui_window report_win = {
+	.up = tui_report_move_up,
+	.down = tui_report_move_down,
+	.pgup = tui_report_page_up,
+	.pgdown = tui_report_page_down,
+	.home = tui_report_move_home,
+	.end = tui_report_move_end,
+	.prev = tui_report_move_up,
+	.next = tui_report_move_down,
+	.search = tui_search_report_count,
+	.search_prev = tui_search_report_prev,
+	.search_next = tui_search_report_next,
+	.display = tui_report_display,
+};
+
 static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 {
 	int key = 0;
-	bool graph_mode = true;
 	bool full_redraw = true;
 	struct tui_graph *graph;
 	struct tui_report *report;
 	struct tui_graph_node *old_graph_top = NULL;
 	struct tui_report_node *old_report_top = NULL;
+	struct tui_window *win;
+	void *param;
 
 	tui_graph_init(opts);
 	tui_report_init(opts);
 	graph = list_first_entry(&tui_graph_list, typeof(*graph), list);
 	report = &tui_report;
+
+	win = &graph_win;
+	param = graph;
 
 	while (true) {
 		switch (key) {
@@ -1676,46 +1764,28 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			break;
 		case KEY_UP:
 		case 'k':
-			if (graph_mode)
-				tui_graph_move_up(graph);
-			else
-				tui_report_move_up(report);
+			win->up(param);
 			break;
 		case KEY_DOWN:
 		case 'j':
-			if (graph_mode)
-				tui_graph_move_down(graph);
-			else
-				tui_report_move_down(report);
+			win->down(param);
 			break;
 		case KEY_PPAGE:
-			if (graph_mode)
-				tui_graph_page_up(graph);
-			else
-				tui_report_page_up(report);
+			win->pgup(param);
 			break;
 		case KEY_NPAGE:
-			if (graph_mode)
-				tui_graph_page_down(graph);
-			else
-				tui_report_page_down(report);
+			win->pgdown(param);
 			break;
 		case KEY_HOME:
-			if (graph_mode)
-				tui_graph_move_home(graph);
-			else
-				tui_report_move_home(report);
+			win->home(param);
 			break;
 		case KEY_END:
-			if (graph_mode)
-				tui_graph_move_end(graph);
-			else
-				tui_report_move_end(report);
+			win->end(param);
 			break;
 		case KEY_ENTER:
 		case '\n':
-			if (graph_mode) {
-				tui_graph_enter(graph);
+			if (win->enter) {
+				win->enter(param);
 				full_redraw = true;
 			}
 			break;
@@ -1724,16 +1794,17 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			tui_search = NULL;
 			break;
 		case 'G':
-			if (!graph_mode || graph == &partial_graph) {
-				graph_mode = true;  /* full graph mode */
-				graph = list_first_entry(&tui_graph_list,
-							 typeof(*graph), list);
-				tui_search_graph_count(graph);
+			if (win != &graph_win || graph == &partial_graph) {
+				/* full graph mode */
+				win = &graph_win;
+				graph = param = list_first_entry(&tui_graph_list,
+							typeof(*graph), list);
+				win->search(param);
 				full_redraw = true;
 			}
 			break;
 		case 'g':
-			if (graph_mode) {
+			if (win == &graph_win) {
 				struct tui_report_node *func;
 				char *name = graph->curr->n.name;
 
@@ -1752,67 +1823,55 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			graph->nr_search = -1;
 			tui_search_graph_count(graph);
 
-			graph_mode = true;
+			param = graph;
+			win = &graph_win;
 			full_redraw = true;
 			break;
 		case 'R':
 		case 'r':
-			if (graph_mode) {
-				graph_mode = false;  /* report mode */
+			if (win == &graph_win) {
+				win = &report_win;
+				param = report;
+
 				full_redraw = true;
 				tui_search_report_count(report);
 			}
 			break;
 		case 'c':
-			if (graph_mode) {
-				tui_graph_collapse(graph);
+			if (win->collapse) {
+				win->collapse(param);
 				full_redraw = true;
 			}
 			break;
 		case 'e':
-			if (graph_mode) {
-				tui_graph_expand(graph);
+			if (win->expand) {
+				win->expand(param);
 				full_redraw = true;
 			}
 			break;
 		case 'p':
-			if (graph_mode)
-				tui_graph_move_prev(graph);
-			else
-				tui_report_move_up(report);
+			win->prev(param);
 			break;
 		case 'n':
-			if (graph_mode)
-				tui_graph_move_next(graph);
-			else
-				tui_report_move_down(report);
+			win->next(param);
 			break;
 		case 'u':
-			if (graph_mode)
-				tui_graph_move_parent(graph);
+			if (win->parent)
+				win->parent(param);
 			break;
 		case '/':
 			free(tui_search);
 			tui_search = tui_search_start();
-			if (graph_mode)
-				tui_search_graph_count(graph);
-			else
-				tui_search_report_count(report);
+			win->search(param);
 			full_redraw = true;
 			break;
 		case '<':
 		case 'P':
-			if (graph_mode)
-				tui_search_graph_prev(graph);
-			else
-				tui_search_report_prev(report);
+			win->search_prev(param);
 			break;
 		case '>':
 		case 'N':
-			if (graph_mode)
-				tui_search_graph_next(graph);
-			else
-				tui_search_report_next(report);
+			win->search_next(param);
 			break;
 		case 'v':
 			tui_debug = !tui_debug;
@@ -1823,18 +1882,15 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			break;
 		}
 
-		if (graph_mode && graph->top != old_graph_top)
+		if (win == &graph_win && graph->top != old_graph_top)
 			full_redraw = true;
-		if (!graph_mode && report->top != old_report_top)
+		if (win == &report_win && report->top != old_report_top)
 			full_redraw = true;
 
 		if (full_redraw)
 			clear();
 
-		if (graph_mode)
-			tui_graph_display(handle, graph, full_redraw);
-		else
-			tui_report_display(handle, report, full_redraw);
+		win->display(handle, param, full_redraw);
 		refresh();
 
 		full_redraw = false;
