@@ -112,6 +112,7 @@ static LIST_HEAD(tui_graph_list);
 static LIST_HEAD(graph_output_fields);
 static struct tui_report tui_report;
 static struct tui_graph partial_graph;
+static struct tui_list tui_session;
 static char *tui_search;
 
 #define FIELD_SPACE  2
@@ -1649,6 +1650,153 @@ static void tui_list_move_end(void *arg)
 	}
 }
 
+static void tui_session_init(struct opts *opts)
+{
+	struct tui_graph *graph;
+	struct tui_list_node *node;
+
+	INIT_LIST_HEAD(&tui_session.head);
+	tui_session.nr_node = 0;
+
+	list_for_each_entry(graph, &tui_graph_list, list) {
+		node = xmalloc(sizeof(*node));
+
+		node->data = graph->ug.sess;
+		list_add_tail(&node->list, &tui_session.head);
+		tui_session.nr_node++;
+	}
+
+	tui_list_move_home(&tui_session);
+}
+
+static void tui_session_finish(void)
+{
+	struct tui_list_node *node, *tmp;
+
+	list_for_each_entry_safe(node, tmp, &tui_session.head, list) {
+		list_del(&node->list);
+		free(node);
+	}
+}
+
+static void print_session_header(struct ftrace_file_handle *handle,
+				 struct tui_list *list)
+{
+	int w = SESSION_ID_LEN + 2 + 15;
+
+	move(0, 0);
+	attron(COLOR_PAIR(C_HEADER) | A_BOLD);
+	printw("%*s  %-s", SESSION_ID_LEN, "Session ID", "Executable File");
+	if (COLS > w)
+		printw("%*s", COLS - w, "");
+	attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
+}
+
+static void print_session_footer(struct ftrace_file_handle *handle,
+				 struct tui_list *list)
+{
+	char buf[256];
+
+	snprintf(buf, sizeof(buf), "uftrace: %d session(s)", list->nr_node);
+
+	move(LINES - 1, 0);
+	attron(COLOR_PAIR(C_HEADER) | A_BOLD);
+	printw("%-*s", COLS, buf);
+	attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
+}
+
+static void tui_session_display(struct ftrace_file_handle *handle,
+				void *arg, bool full_redraw)
+{
+	int count = 0;
+	struct tui_list *list = arg;
+	struct tui_list_node *node = list->top;
+	struct tui_list_node *last;
+
+	if (LINES <= 2)
+		return;
+
+	print_session_header(handle, list);
+
+	last = list_last_entry(&list->head, struct tui_list_node, list);
+
+	while (count < LINES - 2) {
+		int width = 18;  /* session id + spaces */
+		struct uftrace_session *s = node->data;
+		int len = s->namelen;
+
+		if (!full_redraw && node != list->curr && node != list->old)
+			goto next;
+
+		move(count + 1, 0);
+
+		if (node == list->curr)
+			attron(A_REVERSE);
+
+		printw("%.*s  ", SESSION_ID_LEN, s->sid);
+
+		if (len + 18 > COLS)
+			len = COLS - 18;
+
+		printw("%.*s", len, s->exename);
+		width += len;
+
+		if (width < COLS)
+			printw("%*s", COLS - width, "");
+
+		if (node == list->curr)
+			attroff(A_REVERSE);
+
+next:
+		if (node == last)
+			break;
+
+		node = list_next_entry(node, list);
+		count++;
+	}
+
+	print_session_footer(handle, list);
+}
+
+
+static struct tui_graph * get_current_graph(void)
+{
+	struct tui_list_node *curr = tui_session.curr;
+	struct tui_graph *graph;
+
+	list_for_each_entry(graph, &tui_graph_list, list) {
+		if (curr->data == graph->ug.sess)
+			return graph;
+	}
+
+	/* should not happen */
+	return NULL;
+}
+
+static void tui_session_enter(void *arg)
+{
+	/* update partial graph for different session */
+	struct tui_graph *graph = get_current_graph();
+	struct uftrace_session *old = partial_graph.ug.sess;
+	struct uftrace_session *new = graph->ug.sess;
+	struct uftrace_graph_node *node;
+	struct tui_report_node *func;
+
+	if (old == NULL || old == new)
+		return;
+
+	/* get root node */
+	node = &partial_graph.ug.root;
+	/* get function call node */
+	node = list_last_entry(&node->head, typeof(*node), list);
+	/* get first child (= actual function) */
+	node = list_first_entry(&node->head, typeof(*node), list);
+
+	func = find_report_node(&tui_report, node->name);
+
+	build_partial_graph(func, graph);
+}
+
 static char * tui_search_start(void)
 {
 	WINDOW *win;
@@ -1888,7 +2036,7 @@ struct tui_window report_win = {
 	.display = tui_report_display,
 };
 
-struct tui_window list_win = {
+struct tui_window session_win = {
 	.up = tui_list_move_up,
 	.down = tui_list_move_down,
 	.pgup = tui_list_page_up,
@@ -1897,6 +2045,8 @@ struct tui_window list_win = {
 	.end = tui_list_move_end,
 	.prev = tui_list_move_up,
 	.next = tui_list_move_down,
+	.enter = tui_session_enter,
+	.display = tui_session_display,
 };
 
 static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
@@ -1905,18 +2055,26 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 	bool full_redraw = true;
 	struct tui_graph *graph;
 	struct tui_report *report;
+	struct tui_list *session;
 	struct tui_graph_node *old_graph_top = NULL;
 	struct tui_report_node *old_report_top = NULL;
-	struct tui_window *win;
-	void *param;
+	struct tui_list_node *old_session_top = NULL;
+	struct tui_window *win, *prev_win;
+	void *param, *prev_param;
 
 	tui_graph_init(opts);
 	tui_report_init(opts);
+	tui_session_init(opts);
+
 	graph = list_first_entry(&tui_graph_list, typeof(*graph), list);
 	report = &tui_report;
+	session = &tui_session;
 
+	/* start with graph mode */
 	win = &graph_win;
 	param = graph;
+	prev_win = win;
+	prev_param = param;
 
 	while (true) {
 		switch (key) {
@@ -1948,6 +2106,18 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			if (win->enter) {
 				win->enter(param);
 				full_redraw = true;
+
+				if (win == &session_win) {
+					win = prev_win;
+					param = prev_param;
+
+					if (win == &graph_win &&
+					    graph != &partial_graph) {
+						graph = get_current_graph();
+						param = graph;
+					}
+					win->home(param);
+				}
 			}
 			break;
 		case KEY_ESCAPE:
@@ -1958,8 +2128,7 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			if (win != &graph_win || graph == &partial_graph) {
 				/* full graph mode */
 				win = &graph_win;
-				graph = param = list_first_entry(&tui_graph_list,
-							typeof(*graph), list);
+				graph = param = get_current_graph();
 				win->search(param);
 				full_redraw = true;
 			}
@@ -1972,13 +2141,15 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 				func = find_report_node(report, name);
 				build_partial_graph(func, graph->curr->graph);
 			}
-			else {
+			else if (win == &report_win) {
 				struct tui_graph_node *func;
 
 				func = list_first_entry(&report->curr->head,
 							typeof(*func), link);
 				build_partial_graph(report->curr, func->graph);
 			}
+			else
+				break;
 
 			graph = &partial_graph;
 			graph->nr_search = -1;
@@ -1990,13 +2161,21 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			break;
 		case 'R':
 		case 'r':
-			if (win == &graph_win) {
+			if (win != &report_win) {
 				win = &report_win;
 				param = report;
 
 				full_redraw = true;
 				tui_search_report_count(report);
 			}
+			break;
+		case 'S':
+			prev_win = win;
+			prev_param = param;
+
+			win = &session_win;
+			param = session;
+			full_redraw = true;
 			break;
 		case 'c':
 			if (win->collapse) {
@@ -2021,18 +2200,22 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 				win->parent(param);
 			break;
 		case '/':
-			free(tui_search);
-			tui_search = tui_search_start();
-			win->search(param);
-			full_redraw = true;
+			if (win->search) {
+				free(tui_search);
+				tui_search = tui_search_start();
+				win->search(param);
+				full_redraw = true;
+			}
 			break;
 		case '<':
 		case 'P':
-			win->search_prev(param);
+			if (win->search_prev)
+				win->search_prev(param);
 			break;
 		case '>':
 		case 'N':
-			win->search_next(param);
+			if (win->search_next)
+				win->search_next(param);
 			break;
 		case 'v':
 			tui_debug = !tui_debug;
@@ -2047,6 +2230,8 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			full_redraw = true;
 		if (win == &report_win && report->top != old_report_top)
 			full_redraw = true;
+		if (win == &session_win && session->top != old_session_top)
+			full_redraw = true;
 
 		if (full_redraw)
 			clear();
@@ -2058,8 +2243,11 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 
 		graph->old = graph->curr;
 		report->old = report->curr;
+		session->old = session->curr;
+
 		old_graph_top = graph->top;
 		old_report_top = report->top;
+		old_session_top = session->top;
 
 		move(LINES-1, COLS-1);
 		key = getch();
@@ -2067,6 +2255,7 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 
 	tui_graph_finish();
 	tui_report_finish();
+	tui_session_finish();
 }
 
 int command_tui(int argc, char *argv[], struct opts *opts)
