@@ -43,6 +43,11 @@ struct tui_report_node {
 	unsigned calls;
 };
 
+struct tui_list_node {
+	struct list_head list;
+	void *data;
+};
+
 struct tui_report {
 	struct list_head list;
 	struct rb_root name_tree;
@@ -71,6 +76,16 @@ struct tui_graph {
 	bool *curr_mask;
 	size_t mask_size;
 	int nr_search;
+};
+
+struct tui_list {
+	struct list_head head;
+	struct tui_list_node *top;
+	struct tui_list_node *old;
+	struct tui_list_node *curr;
+	int top_index;
+	int curr_index;
+	int nr_node;
 };
 
 struct tui_window {
@@ -1499,6 +1514,141 @@ next:
 	print_report_footer(handle, report);
 }
 
+static void tui_list_move_up(void *arg)
+{
+	struct tui_list *list = arg;
+	struct tui_list_node *first;
+
+	first = list_first_entry(&list->head, struct tui_list_node, list);
+	if (list->curr == first)
+		return;
+
+	list->curr = list_prev_entry(list->curr, list);
+	list->curr_index--;
+
+	if (list->curr_index < list->top_index) {
+		list->top = list->curr;
+		list->top_index = list->curr_index;
+	}
+}
+
+static void tui_list_move_down(void *arg)
+{
+	struct tui_list *list = arg;
+	struct tui_list_node *last;
+
+	last = list_last_entry(&list->head, struct tui_list_node, list);
+	if (list->curr == last)
+		return;
+
+	list->curr = list_next_entry(list->curr, list);
+	list->curr_index++;
+
+	if (list->curr_index - list->top_index >= LINES - 2) {
+		list->top = list_next_entry(list->top, list);
+		list->top_index++;
+	}
+}
+
+static void tui_list_page_up(void *arg)
+{
+	struct tui_list *list = arg;
+	struct tui_list_node *first;
+
+	first = list_first_entry(&list->head, struct tui_list_node, list);
+
+	if (list->curr != list->top) {
+		list->curr = list->top;
+		list->curr_index = list->top_index;
+		return;
+	}
+
+	while (list->top_index - list->curr_index < LINES - 2) {
+		if (list->curr == first)
+			break;
+
+		list->curr = list_prev_entry(list->curr, list);
+		list->curr_index--;
+	}
+
+	list->top = list->curr;
+	list->top_index = list->curr_index;
+}
+
+static void tui_list_page_down(void *arg)
+{
+	struct tui_list *list = arg;
+	struct tui_list_node *next;
+	struct tui_list_node *last;
+	int orig_index = list->top_index;
+	int next_index = list->curr_index;
+
+	last = list_last_entry(&list->head, struct tui_list_node, list);
+	if (list->curr == last)
+		return;
+
+	next = list_next_entry(list->curr, list);
+	next_index++;
+
+	/* we're already at the end of page - move to next page */
+	if (next_index - list->top_index >= LINES - 2)
+		orig_index = next_index;
+
+	do {
+		/* move curr to the bottom from orig_index */
+		list->curr = next;
+		list->curr_index = next_index;
+
+		if (next == last)
+			break;
+
+		next = list_next_entry(next, list);
+		next_index++;
+	}
+	while (next_index - orig_index < LINES - 2);
+
+	/* move top if page was moved */
+	while (list->curr_index - list->top_index >= LINES - 2) {
+		list->top = list_prev_entry(list->top, list);
+		list->top_index++;
+	}
+}
+
+static void tui_list_move_home(void *arg)
+{
+	struct tui_list *list = arg;
+
+	list->top = list_first_entry(&list->head, struct tui_list_node, list);
+	list->curr = list->top;
+
+	list->top_index = list->curr_index = 0;
+}
+
+static void tui_list_move_end(void *arg)
+{
+	struct tui_list *list = arg;
+	struct tui_list_node *first;
+	struct tui_list_node *prev;
+	int prev_index;
+
+	first = list_first_entry(&list->head, struct tui_list_node, list);
+	prev = list_last_entry(&list->head, struct tui_list_node, list);
+
+	list->curr = prev;
+	list->curr_index = prev_index = list->nr_node - 1;
+
+	while (list->curr_index - prev_index < LINES - 2) {
+		list->top = prev;
+		list->top_index = prev_index;
+
+		if (list->top == first)
+			break;
+
+		prev = list_prev_entry(prev, list);
+		prev_index--;
+	}
+}
+
 static char * tui_search_start(void)
 {
 	WINDOW *win;
@@ -1736,6 +1886,17 @@ struct tui_window report_win = {
 	.search_prev = tui_search_report_prev,
 	.search_next = tui_search_report_next,
 	.display = tui_report_display,
+};
+
+struct tui_window list_win = {
+	.up = tui_list_move_up,
+	.down = tui_list_move_down,
+	.pgup = tui_list_page_up,
+	.pgdown = tui_list_page_down,
+	.home = tui_list_move_home,
+	.end = tui_list_move_end,
+	.prev = tui_list_move_up,
+	.next = tui_list_move_down,
 };
 
 static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
