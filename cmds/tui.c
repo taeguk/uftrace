@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <ncurses.h>
@@ -113,6 +114,7 @@ static LIST_HEAD(graph_output_fields);
 static struct tui_report tui_report;
 static struct tui_graph partial_graph;
 static struct tui_list tui_session;
+static struct tui_list tui_info;
 static char *tui_search;
 
 #define FIELD_SPACE  2
@@ -1797,6 +1799,103 @@ static void tui_session_enter(void *arg)
 	build_partial_graph(func, graph);
 }
 
+static void build_info_node(void *data, const char *fmt, ...)
+{
+	va_list ap;
+	struct tui_list *info = data;
+	struct tui_list_node *node;
+	char *str = NULL;
+
+	node = xmalloc(sizeof(*node));
+
+	va_start(ap, fmt);
+	vasprintf(&str, fmt, ap);
+	va_end(ap);
+
+	/* remove trailing newline */
+	str[strlen(str) - 1] = '\0';
+
+	node->data = str;
+	list_add_tail(&node->list, &info->head);
+}
+
+static void tui_info_init(struct opts *opts, struct ftrace_file_handle *handle)
+{
+	INIT_LIST_HEAD(&tui_info.head);
+	process_uftrace_info(handle, opts, build_info_node, &tui_info);
+	tui_list_move_home(&tui_info);
+}
+
+static void tui_info_finish(void)
+{
+	struct tui_list_node *node, *tmp;
+
+	list_for_each_entry_safe(node, tmp, &tui_info.head, list) {
+		list_del(&node->list);
+		free(node->data);
+		free(node);
+	}
+}
+
+static void print_info_header(struct ftrace_file_handle *handle,
+			      struct tui_list *list)
+{
+
+	move(0, 0);
+	attron(COLOR_PAIR(C_HEADER) | A_BOLD);
+	printw("%-*s", COLS, "uftrace info");
+	attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
+}
+
+static void print_info_footer(struct ftrace_file_handle *handle,
+			      struct tui_list *list)
+{
+	move(LINES - 1, 0);
+	attron(COLOR_PAIR(C_HEADER) | A_BOLD);
+	printw("%-*s", COLS, "uftrace info");
+	attroff(COLOR_PAIR(C_HEADER) | A_BOLD);
+}
+
+static void tui_info_display(struct ftrace_file_handle *handle,
+			     void *arg, bool full_redraw)
+{
+	int count = 0;
+	struct tui_list *list = arg;
+	struct tui_list_node *node = list->top;
+	struct tui_list_node *last;
+
+	if (LINES <= 2)
+		return;
+
+	print_info_header(handle, list);
+
+	last = list_last_entry(&list->head, struct tui_list_node, list);
+
+	while (count < LINES - 2) {
+		if (!full_redraw && node != list->curr && node != list->old)
+			goto next;
+
+		move(count + 1, 0);
+
+		if (node == list->curr)
+			attron(A_REVERSE);
+
+		printw("%-*s", COLS, node->data);
+
+		if (node == list->curr)
+			attroff(A_REVERSE);
+
+next:
+		if (node == last)
+			break;
+
+		node = list_next_entry(node, list);
+		count++;
+	}
+
+	print_info_footer(handle, list);
+}
+
 static char * tui_search_start(void)
 {
 	WINDOW *win;
@@ -2049,6 +2148,18 @@ struct tui_window session_win = {
 	.display = tui_session_display,
 };
 
+struct tui_window info_win = {
+	.up = tui_list_move_up,
+	.down = tui_list_move_down,
+	.pgup = tui_list_page_up,
+	.pgdown = tui_list_page_down,
+	.home = tui_list_move_home,
+	.end = tui_list_move_end,
+	.prev = tui_list_move_up,
+	.next = tui_list_move_down,
+	.display = tui_info_display,
+};
+
 static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 {
 	int key = 0;
@@ -2056,19 +2167,23 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 	struct tui_graph *graph;
 	struct tui_report *report;
 	struct tui_list *session;
+	struct tui_list *info;
 	struct tui_graph_node *old_graph_top = NULL;
 	struct tui_report_node *old_report_top = NULL;
 	struct tui_list_node *old_session_top = NULL;
+	struct tui_list_node *old_info_top = NULL;
 	struct tui_window *win, *prev_win;
 	void *param, *prev_param;
 
 	tui_graph_init(opts);
 	tui_report_init(opts);
 	tui_session_init(opts);
+	tui_info_init(opts, handle);
 
 	graph = list_first_entry(&tui_graph_list, typeof(*graph), list);
 	report = &tui_report;
 	session = &tui_session;
+	info = &tui_info;
 
 	/* start with graph mode */
 	win = &graph_win;
@@ -2157,6 +2272,8 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 
 			param = graph;
 			win = &graph_win;
+
+			win->home(param);
 			full_redraw = true;
 			break;
 		case 'R':
@@ -2175,6 +2292,12 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 
 			win = &session_win;
 			param = session;
+			full_redraw = true;
+			break;
+		case 'I':
+		case 'i':
+			win = &info_win;
+			param = info;
 			full_redraw = true;
 			break;
 		case 'c':
@@ -2232,6 +2355,8 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			full_redraw = true;
 		if (win == &session_win && session->top != old_session_top)
 			full_redraw = true;
+		if (win == &info_win && info->top != old_info_top)
+			full_redraw = true;
 
 		if (full_redraw)
 			clear();
@@ -2244,10 +2369,12 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 		graph->old = graph->curr;
 		report->old = report->curr;
 		session->old = session->curr;
+		info->old = info->curr;
 
 		old_graph_top = graph->top;
 		old_report_top = report->top;
 		old_session_top = session->top;
+		old_info_top = info->top;
 
 		move(LINES-1, COLS-1);
 		key = getch();
@@ -2256,6 +2383,7 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 	tui_graph_finish();
 	tui_report_finish();
 	tui_session_finish();
+	tui_info_finish();
 }
 
 int command_tui(int argc, char *argv[], struct opts *opts)
