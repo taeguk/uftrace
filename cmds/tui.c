@@ -113,11 +113,13 @@ static LIST_HEAD(graph_output_fields);
 static struct tui_report tui_report;
 static struct tui_graph partial_graph;
 static struct tui_list tui_info;
+static struct tui_list tui_session;
 static char *tui_search;
 
 static const struct tui_window_ops graph_ops;
 static const struct tui_window_ops report_ops;
 static const struct tui_window_ops info_ops;
+static const struct tui_window_ops session_ops;
 
 #define FIELD_SPACE  2
 #define FIELD_SEP  " :"
@@ -137,6 +139,7 @@ static const char *help[] = {
 	"g             Show call graph for this function",
 	"R             Show uftrace report",
 	"I             Show uftrace info",
+	"S             Change session",
 	"c/e           Collapse/Expand graph",
 	"n/p           Next/Prev sibling",
 	"u             Move up to parent",
@@ -609,6 +612,9 @@ static struct tui_graph * tui_graph_init(struct opts *opts)
 
 	INIT_LIST_HEAD(&partial_graph.ug.root.head);
 	INIT_LIST_HEAD(&partial_graph.ug.special_nodes);
+
+	/* select first session */
+	partial_graph.ug.sess = graph->ug.sess;
 
 	return graph;
 }
@@ -1422,6 +1428,179 @@ static const struct tui_window_ops info_ops = {
 	.display = win_display_info,
 };
 
+#define TUI_SESS_REPORT    1
+#define TUI_SESS_INFO      2
+#define TUI_SESS_HELP      3
+#define TUI_SESS_QUIT      4
+#define TUI_SESS_DUMMY_NR  4
+
+/* per-window operations for session window */
+static struct tui_list * tui_session_init(struct opts *opts)
+{
+	struct tui_graph *graph;
+	struct tui_list_node *node;
+	int i;
+
+	INIT_LIST_HEAD(&tui_session.head);
+	tui_session.nr_node = 0;
+
+	list_for_each_entry(graph, &tui_graph_list, list) {
+		node = xmalloc(sizeof(*node));
+
+		node->data = graph->ug.sess;
+		list_add_tail(&node->list, &tui_session.head);
+		tui_session.nr_node++;
+	}
+
+	for (i = 1; i <= TUI_SESS_DUMMY_NR; i++) {
+		node = xmalloc(sizeof(*node));
+		node->data = (void *)(long)i;
+		list_add_tail(&node->list, &tui_session.head);
+	}
+
+	tui_window_init(&tui_session.win, &session_ops);
+
+	return &tui_session;
+}
+
+static void tui_session_finish(void)
+{
+	struct tui_list_node *node, *tmp;
+
+	list_for_each_entry_safe(node, tmp, &tui_session.head, list) {
+		list_del(&node->list);
+		free(node);
+	}
+}
+
+static void win_header_session(struct tui_window *win,
+			       struct ftrace_file_handle *handle)
+{
+	printw("%s %-*s", "Key", COLS - 4, "uftrace command");
+}
+
+static void win_footer_session(struct tui_window *win,
+			       struct ftrace_file_handle *handle)
+{
+	char buf[256];
+	struct tui_list *s_list = (struct tui_list *)win;
+	struct tui_list_node *node = win->curr;
+	struct uftrace_session *s = node->data;
+
+	switch ((long)node->data) {
+	case TUI_SESS_REPORT:
+	case TUI_SESS_INFO:
+	case TUI_SESS_HELP:
+	case TUI_SESS_QUIT:
+		snprintf(buf, sizeof(buf), "uftrace: %d session(s)",
+			 s_list->nr_node);
+		break;
+	default:
+		snprintf(buf, sizeof(buf), "session %.*s:  exe image: %s",
+			 SESSION_ID_LEN, s->sid, s->exename);
+		break;
+	}
+
+	printw("%-*s", COLS, buf);
+}
+
+static void win_display_session(struct tui_window *win, void *node)
+{
+	int width = 0;
+	char buf[128];
+	struct tui_list_node *curr = node;
+	struct uftrace_session *s = curr->data;
+	struct uftrace_session *curr_sess = NULL;
+
+	switch ((long)s) {
+	case TUI_SESS_REPORT:
+		printw(" R  Report functions");
+		width = 23;
+		break;
+	case TUI_SESS_INFO:
+		printw(" I  uftrace Info");
+		width = 21;
+		break;
+	case TUI_SESS_HELP:
+		printw(" h  Help message");
+		width = 21;
+		break;
+	case TUI_SESS_QUIT:
+		printw(" q  quit");
+		width = 8;
+		break;
+	default:
+		curr_sess = partial_graph.ug.sess;
+		width = snprintf(buf, sizeof(buf), " %c  %s: %*.*s  ",
+				 s == curr_sess ? 'G' : ' ',
+				 "call Graph for session",
+				 SESSION_ID_LEN, SESSION_ID_LEN, s->sid);
+		printw("%s", buf);
+	}
+
+	if (width < COLS)
+		printw("%*s", COLS - width, "");
+}
+
+static struct tui_graph * get_current_graph(struct tui_list_node *node)
+{
+	struct tui_graph *graph;
+
+	list_for_each_entry(graph, &tui_graph_list, list) {
+		if (graph->ug.sess == node->data)
+			return graph;
+	}
+
+	return NULL;
+}
+
+static bool win_enter_session(struct tui_window *win, void *node)
+{
+	/* update partial graph for different session */
+	struct tui_list_node *curr = node;
+	struct uftrace_session *old = partial_graph.ug.sess;
+	struct uftrace_session *new = curr->data;
+	struct uftrace_graph_node *ugnode;
+	struct tui_report_node *func;
+
+	if ((unsigned long)curr->data <= TUI_SESS_DUMMY_NR)
+		return true;
+
+	if (old == new)
+		return false;
+
+	partial_graph.ug.sess = curr->data;
+
+	/* get root node */
+	ugnode = &partial_graph.ug.root;
+	if (list_empty(&ugnode->head))
+		return true;
+
+	/* get function call node */
+	ugnode = list_last_entry(&ugnode->head, typeof(*ugnode), list);
+	/* get first child (= actual function) */
+	ugnode = list_first_entry(&ugnode->head, typeof(*ugnode), list);
+
+	func = find_report_node(&tui_report, ugnode->name);
+
+	build_partial_graph(func, get_current_graph(node));
+	return true;
+}
+
+static const struct tui_window_ops session_ops = {
+	.prev = win_prev_list,
+	.next = win_next_list,
+	.top = win_top_list,
+	.parent = win_parent_no,
+	.sibling_prev = win_sibling_prev_no,
+	.sibling_next = win_sibling_next_no,
+	.needs_blank = win_needs_blank_no,
+	.enter = win_enter_session,
+	.header = win_header_session,
+	.footer = win_footer_session,
+	.display = win_display_session,
+};
+
 /* common window operations */
 static void tui_window_move_up(struct tui_window *win)
 {
@@ -1865,16 +2044,22 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 	bool full_redraw = true;
 	struct tui_graph *graph;
 	struct tui_report *report;
-	struct tui_window *win;
 	struct tui_list *info;
+	struct tui_list *session;
+	struct tui_window *win;
 	void *old_top;
 
 	graph = tui_graph_init(opts);
 	report = tui_report_init(opts);
 	info = tui_info_init(opts, handle);
+	session = tui_session_init(opts);
 
-	/* start with graph mode */
-	win = &graph->win;
+	/* start with graph only if there's one session */
+	if (session->nr_node > 1)
+		win = &session->win;
+	else
+		win = &graph->win;
+
 	old_top = win->top;
 
 	while (true) {
@@ -1906,6 +2091,29 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 		case '\n':
 			if (tui_window_enter(win, win->curr))
 				full_redraw = true;
+
+			if (win == &session->win) {
+				struct tui_list_node *cmd = win->curr;
+
+				switch ((long)cmd->data) {
+				case TUI_SESS_REPORT:
+					win = &report->win;
+					break;
+				case TUI_SESS_INFO:
+					win = &info->win;
+					break;
+				case TUI_SESS_HELP:
+					tui_window_help();
+					break;
+				case TUI_SESS_QUIT:
+					goto out;
+				default:
+					/* select current graph */
+					graph = get_current_graph(win->curr);
+					win = &graph->win;
+					break;
+				}
+			}
 			break;
 		case KEY_ESCAPE:
 			free(tui_search);  /* cancel search */
@@ -1946,6 +2154,12 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 		case 'I':
 			if (tui_window_change(win, &info->win)) {
 				win = &info->win;
+				full_redraw = true;
+			}
+			break;
+		case 'S':
+			if (tui_window_change(win, &session->win)) {
+				win = &session->win;
 				full_redraw = true;
 			}
 			break;
@@ -1991,7 +2205,7 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 			full_redraw = true;
 			break;
 		case 'q':
-			return;
+			goto out;
 		default:
 			break;
 		}
@@ -2014,9 +2228,11 @@ static void tui_main_loop(struct opts *opts, struct ftrace_file_handle *handle)
 		key = getch();
 	}
 
+out:
 	tui_graph_finish();
 	tui_report_finish();
 	tui_info_finish();
+	tui_session_finish();
 }
 
 int command_tui(int argc, char *argv[], struct opts *opts)
