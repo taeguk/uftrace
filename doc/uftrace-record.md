@@ -79,7 +79,10 @@ OPTIONS
 :   Record function return values.  This option can be used more than once.  See *ARGUMENTS*.
 
 \--auto-args
-:   Automatically record arguments and return values of well-known library functions.  Recommend to use it with `--nest-libcall`.
+:   Automatically record arguments and return values of known functions.
+    This is usually functions in standard (C language or system) libraries
+    but if debug info is available includes functions in the user program.
+    Recommend to use it with `--nest-libcall`.
 
 \--num-thread=*NUM*
 :   Use NUM threads to record trace data.  Default is 1/4 of online CPUs (but when full kernel tracing is enabled, it will use the full number of CPUs).
@@ -388,7 +391,8 @@ For example, the above example can be written like below:
 
 Note that argument pattern (".") matches to any character so it recorded
 all (supported) functions.  It shows two arguments for "main" and a single
-string argument for "puts".
+string argument for "puts".  If you simply want to see all arguments and
+return values of every functions (if supported), use `--auto-args` option.
 
 
 DYNAMIC TRACING
