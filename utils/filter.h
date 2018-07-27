@@ -79,6 +79,9 @@ enum trigger_read_type {
  */
 #define RETVAL_IDX 0
 
+/* maximum length of a string argument or return value */
+#define ARG_STR_MAX  98
+
 struct uftrace_arg_spec {
 	struct list_head	list;
 	int			idx;

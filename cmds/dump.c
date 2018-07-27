@@ -416,7 +416,7 @@ static void pr_retval(struct fstack_arguments *args)
 
 		if (spec->fmt == ARG_FMT_STR ||
 		    spec->fmt == ARG_FMT_STD_STRING) {
-			char buf[64] = {0};
+			char buf[ARG_STR_MAX + 2];
 			const int null_str = -1;
 
 			size = *(unsigned short *)ptr;

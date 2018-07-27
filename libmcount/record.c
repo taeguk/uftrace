@@ -20,8 +20,6 @@
 
 #define SHMEM_SESSION_FMT  "/uftrace-%s-%d-%03d" /* session-id, tid, seq */
 
-#define ARG_STR_MAX	98
-
 static struct mcount_shmem_buffer *allocate_shmem_buffer(char *buf, size_t size,
 							 int tid, int idx)
 {
@@ -457,7 +455,7 @@ static unsigned save_to_argbuf(void *argbuf, struct list_head *args_spec,
 					dst[i] = str[i];
 
 					/* truncate long string */
-					if (i > ARG_STR_MAX) {
+					if (i == ARG_STR_MAX) {
 						dst[i-3] = '.';
 						dst[i-2] = '.';
 						dst[i-1] = '.';
