@@ -28,6 +28,14 @@
 
 #include "utils/asm.h"
 
+/*
+__attribute__((always_inline))
+int mcount_entry_wrap(unsigned long *parent_loc, unsigned long child,
+		 struct mcount_regs *regs)
+{
+	return mcount_entry(parent_loc, child, regs);
+}*/
+
 GLOBAL(mcount)
 	.cfi_startproc
 	sub $48, %rsp

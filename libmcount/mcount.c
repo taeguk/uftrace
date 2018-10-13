@@ -898,6 +898,9 @@ mcount_arch_parent_location(struct symtabs *symtabs, unsigned long *parent_loc,
 }
 #endif
 
+int taeguk;
+
+__attribute__((no_instrument_function))
 int mcount_entry(unsigned long *parent_loc, unsigned long child,
 		 struct mcount_regs *regs)
 {
@@ -905,6 +908,11 @@ int mcount_entry(unsigned long *parent_loc, unsigned long child,
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;
 	struct uftrace_trigger tr;
+
+	if (taeguk == 5)
+		return -1;
+
+	taeguk++;
 
 	/* Access the mtd through TSD pointer to reduce TLS overhead */
 	mtdp = get_thread_data();
@@ -997,6 +1005,8 @@ unsigned long mcount_exit(long *retval)
 
 	mtdp->idx--;
 	mcount_unguard_recursion(mtdp);
+
+	taeguk--;
 
 	return retaddr;
 }

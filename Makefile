@@ -91,6 +91,7 @@ ifeq ($(TRACE), 1)
   SYMBOLS_CFLAGS    += -pg -fno-omit-frame-pointer
   TRACEEVENT_CFLAGS += -pg -fno-omit-frame-pointer
   TEST_CFLAGS       += -pg -fno-omit-frame-pointer
+  LIB_CFLAGS        += -pg -fno-omit-frame-pointer
   # cannot add -pg to LIB_CFLAGS because mcount() is not reentrant
 endif
 
